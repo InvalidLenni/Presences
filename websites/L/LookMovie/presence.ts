@@ -1,65 +1,118 @@
+import { Assets } from 'premid'
+
 const presence = new Presence({
-		clientId: "934789855962083359",
-	}),
-	strings = presence.getStrings({
-		play: "general.playing",
-		pause: "general.paused",
-		browsing: "general.browsing",
-	});
+  clientId: '934789855962083359',
+})
+const browingTimestamp = Math.floor(Date.now() / 1000)
+async function getStrings() {
+  return presence.getStrings(
+    {
+      play: 'general.playing',
+      paused: 'general.paused',
+      browse: 'general.browsing',
+      buttonWatchVideo: 'general.buttonWatchVideo',
+      viewCategory: 'general.viewCategory',
+      search: 'general.searchFor',
+    },
+    await presence.getSetting<string>('lang').catch(() => 'en'),
+  )
+}
 
-presence.on("UpdateData", async () => {
-	const presenceData: PresenceData = {
-			largeImageKey: "lm",
-		},
-		video = document.querySelector<HTMLVideoElement>("#video_player"),
-		videoDur = document.querySelector(
-			"#video_player > div.vjs-control-bar > div.vjs-duration.vjs-time-control.vjs-control > span.vjs-duration-display"
-		);
-	if (video && videoDur) {
-		const titles = document.querySelector<HTMLMetaElement>(
-				'meta[property="og:title"]'
-			),
-			videoDuration = presence.timestampFromFormat(
-				document.querySelector(
-					"#video_player > div.vjs-control-bar > div.vjs-duration.vjs-time-control.vjs-control > span.vjs-duration-display"
-				).textContent
-			),
-			videoCurrent = presence.timestampFromFormat(
-				document.querySelector(
-					"#video_player > div.vjs-control-bar > div.vjs-current-time.vjs-time-control.vjs-control > span.vjs-current-time-display"
-				).textContent
-			),
-			videoPaused = video.className;
-		if (document.location.pathname.includes("/s/")) {
-			presenceData.details = titles.content
-				.replace("Watch show", "")
-				.replace("on lookmovie for free in 1080p High Definition", "");
-		} else if (document.location.pathname.includes("/m/")) {
-			presenceData.details = titles.content
-				.replace("Watch movie", "")
-				.replace("on lookmovie in 1080p high definition", "");
-		}
-		presenceData.smallImageKey = videoPaused.includes("vjs-paused")
-			? "pause"
-			: "play";
-		presenceData.smallImageText = videoPaused.includes("vjs-paused")
-			? (await strings).pause
-			: (await strings).play;
-		[presenceData.startTimestamp, presenceData.endTimestamp] =
-			presence.getTimestamps(
-				Math.floor(videoCurrent),
-				Math.floor(videoDuration)
-			);
+enum ActivityAssets {
+  Logo = 'https://cdn.rcd.gg/PreMiD/websites/L/LookMovie/assets/logo.png',
+}
 
-		if (videoPaused.includes("vjs-paused")) {
-			delete presenceData.startTimestamp;
-			delete presenceData.endTimestamp;
-		}
-	} else {
-		presenceData.details = (await strings).browsing;
-		presenceData.smallImageKey = "search";
-		presenceData.smallImageText = (await strings).browsing;
-	}
-	if (presenceData.details) presence.setActivity(presenceData);
-	else presence.setActivity();
-});
+let strings: Awaited<ReturnType<typeof getStrings>>
+let oldLang: string | null = null
+
+presence.on('UpdateData', async () => {
+  const presenceData: PresenceData = {
+    largeImageKey: ActivityAssets.Logo,
+    startTimestamp: browingTimestamp,
+  }
+  const video = document.querySelector<HTMLVideoElement>('video')
+  const search = document.querySelector<HTMLInputElement>('[id="search_input"]')
+  const { pathname, href } = document.location
+  const [newLang, privacy, buttons, covers] = await Promise.all([
+    presence.getSetting<string>('lang').catch(() => 'en'),
+    presence.getSetting<boolean>('privacy'),
+    presence.getSetting<boolean>('buttons'),
+    presence.getSetting<boolean>('covers'),
+  ])
+  if (oldLang !== newLang || !strings) {
+    oldLang = newLang
+    strings = await getStrings()
+  }
+
+  if (privacy) {
+    presenceData.details = strings.browse
+    presence.setActivity(presenceData)
+    return
+  }
+  if (search?.value) {
+    presenceData.details = strings.search
+    presenceData.state = search.value
+    presenceData.smallImageKey = Assets.Search
+  }
+  else if (pathname.includes('/view/')) {
+    presenceData.details = `Viewing ${document
+      .querySelector('[class*="active"]')
+      ?.textContent
+      ?.trim()
+      .slice(0, -1)}`
+    presenceData.state = document
+      .querySelector<HTMLMetaElement>('[property="og:title"]')
+      ?.content
+      .split('-')[0]
+    presenceData.largeImageKey = document
+      .querySelector('[class="movie-img"]')
+      ?.firstElementChild
+      ?.getAttribute('data-background-image') ?? ActivityAssets.Logo
+  }
+  else if (video?.duration) {
+    delete presenceData.startTimestamp
+    presenceData.details = document.querySelector('[class="bd-hd"]')?.textContent
+      ?? document.querySelector<HTMLMetaElement>('meta[property="og:title"]')
+        ?.content
+        ?? document
+          .querySelector('head > title')
+          ?.textContent
+          ?.replace(' | LookMovie', '')
+
+    presenceData.smallImageKey = video.paused ? Assets.Pause : Assets.Play
+    presenceData.smallImageText = video.paused ? strings.paused : strings.play;
+    [presenceData.startTimestamp, presenceData.endTimestamp] = presence.getTimestampsfromMedia(video)
+    presenceData.largeImageKey = document
+      .querySelector('[id="longInfo"]')
+      ?.firstElementChild
+      ?.getAttribute('src')
+      ?? document.querySelector<HTMLMetaElement>('[property="og:image"]')
+        ?.content
+        ?? ActivityAssets.Logo
+    presenceData.buttons = [
+      {
+        label: strings.buttonWatchVideo,
+        url: href,
+      },
+    ]
+
+    if (video.paused)
+      delete presenceData.endTimestamp
+  }
+  else {
+    presenceData.buttons = [
+      {
+        label: 'Browse',
+        url: href,
+      },
+    ]
+    presenceData.details = strings.browse
+  }
+  if (!buttons)
+    delete presenceData.buttons
+  if (!covers)
+    presenceData.largeImageKey = ActivityAssets.Logo
+  if (presenceData.details)
+    presence.setActivity(presenceData)
+  else presence.setActivity()
+})
